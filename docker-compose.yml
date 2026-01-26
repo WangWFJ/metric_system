@@ -1,0 +1,43 @@
+# 生产环境 Compose（不使用已废弃的 version 字段）
+# 所有端口通过 .env 管理，禁止写死端口号
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: prod_backend
+    environment:
+      BACKEND_PORT: "${BACKEND_PORT}"
+      WORKERS: "${WORKERS}"
+      APP_MODULE: "${APP_MODULE:-main:app}"
+      DATABASE_URL: "${DATABASE_URL}"
+    # 映射宿主机端口到容器端口，均来自 .env
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    # 内部网络暴露端口，供其它容器访问（非宿主机）
+    expose:
+      - "${BACKEND_PORT}"
+    restart: always
+    networks:
+      - internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prod_frontend
+    environment:
+      FRONTEND_CONTAINER_PORT: "${FRONTEND_CONTAINER_PORT}"
+      BACKEND_PORT: "${BACKEND_PORT}"
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT}:${FRONTEND_CONTAINER_PORT}"
+    restart: always
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge

@@ -1,0 +1,25 @@
+# =============================
+# app/requirements.txt —— 关键依赖
+# =============================
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+gunicorn>=22.0.0
+
+SQLAlchemy>=2.0.30
+aiomysql>=0.2.0 # 使用 mysql+aiomysql
+
+
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+
+
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+
+httpx>=0.27.0 # 如需测试
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+python-multipart>=0.0.6
+pandas>=2.2.2
+openpyxl>=3.1.5

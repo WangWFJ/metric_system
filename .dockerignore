@@ -1,0 +1,30 @@
+# 减少构建上下文大小，提高构建效率
+
+# 通用
+.git
+.env
+.env.*
+Dockerfile*
+README.md
+*.log
+
+# 前端
+frontend/node_modules
+frontend/.cache
+frontend/dist
+frontend/build
+frontend/.next
+frontend/.vite
+
+# 后端
+backend/__pycache__
+backend/.pytest_cache
+backend/.venv
+backend/venv
+backend/*.sqlite3
+
+# 临时/编辑器
+.DS_Store
+.idea
+.vscode
+
