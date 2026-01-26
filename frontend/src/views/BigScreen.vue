@@ -91,11 +91,11 @@ const raw = ref<Array<IndicatorLatestItem & { value: number | null; score?: numb
 const isPercentIndicator = computed(() => /率|占比/.test(indicatorName.value || ''))
 const valueSuffix = computed(() => (isPercentIndicator.value ? '%' : ''))
 
-const isCenterType = computed(() => form.value.type_id === 3)
-const entityLabel = computed(() => (isCenterType.value ? '支撑中心' : '区县'))
-const entityNameKey = computed(() => (isCenterType.value ? 'center_name' : 'district_name'))
-const chartTitle = computed(() => `${indicatorName.value || '指标'} 全${isCenterType.value ? '支撑中心' : '区县'}（高→低）`)
-const tableTitle = computed(() => `${indicatorName.value || '指标'} 全${isCenterType.value ? '支撑中心' : '区县'}排名（高→低）`)
+const viewCenter = ref(false)
+const entityLabel = computed(() => (viewCenter.value ? '支撑中心' : '区县'))
+const entityNameKey = computed(() => (viewCenter.value ? 'center_name' : 'district_name'))
+const chartTitle = computed(() => `${indicatorName.value || '指标'} 全${viewCenter.value ? '支撑中心' : '区县'}（高→低）`)
+const tableTitle = computed(() => `${indicatorName.value || '指标'} 全${viewCenter.value ? '支撑中心' : '区县'}排名（高→低）`)
 
 const sortedAll = ref<Array<any>>([])
 const chartItems = ref<Array<{ name: string; value: number | null }>>([])
@@ -130,7 +130,11 @@ const applySort = () => {
     .sort((a, b) => {
       const av = (a as any).value
       const bv = (b as any).value
-      if (av === null && bv === null) return a.district_name.localeCompare(b.district_name)
+      if (av === null && bv === null) {
+        const an = (a as any)[entityNameKey.value] || ''
+        const bn = (b as any)[entityNameKey.value] || ''
+        return String(an).localeCompare(String(bn))
+      }
       if (av === null) return 1
       if (bv === null) return -1
       return Number(bv) - Number(av)
@@ -161,7 +165,7 @@ const handleIndicatorSearch = async (q: string) => {
   }
   indicatorSearchLoading.value = true
   try {
-    indicatorOptions.value = await getIndicatorSuggestions({ q, type_id: form.value.type_id, size: 20 })
+    indicatorOptions.value = await getIndicatorSuggestions({ q, size: 20 })
   } catch {
     indicatorOptions.value = []
   } finally {
@@ -199,9 +203,18 @@ const fetchData = async () => {
   }
   loading.value = true
   try {
-    const res = isCenterType.value
-      ? await getCenterLatestById({ indicator_id: form.value.indicator_id, stat_date: form.value.stat_date || undefined })
-      : await getIndicatorLatestById({ indicator_id: form.value.indicator_id, stat_date: form.value.stat_date || undefined })
+    let res: any = []
+    const centerRes = await getCenterLatestById({ indicator_id: form.value.indicator_id, stat_date: form.value.stat_date || undefined })
+    const centerArr: any[] = Array.isArray(centerRes) ? centerRes : []
+    if (centerArr.length > 0) {
+      viewCenter.value = true
+      res = centerArr
+    } else {
+      const districtRes = await getIndicatorLatestById({ indicator_id: form.value.indicator_id, stat_date: form.value.stat_date || undefined })
+      const districtArr: any[] = Array.isArray(districtRes) ? districtRes : []
+      viewCenter.value = false
+      res = districtArr
+    }
     const arr: any[] = Array.isArray(res) ? res : []
     if (arr.length && arr[0].indicator_name) indicatorName.value = String(arr[0].indicator_name)
     displayedDate.value = form.value.stat_date || (arr.length ? String(arr[0].stat_date || '') : '')
