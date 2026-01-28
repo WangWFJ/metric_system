@@ -1,0 +1,8 @@
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.$py.class
+app/services/__pycache__/indicator_service.cpython-310.pyc
+app/__pycache__/main.cpython-310.pyc
+app/api/endpoints/__pycache__/indicators.cpython-310.pyc
