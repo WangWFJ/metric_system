@@ -608,7 +608,7 @@ const getValueClass = (row: IndicatorData) => {
 
 const isPercentIndicator = (name: string | undefined) => {
   if (!name) return false
-  return /率|占比|比率/.test(name)
+  return /率|占比|比例|比率/.test(name)
 }
 
 const formatMetric = (

@@ -402,14 +402,14 @@ const formatNum = (v: any) => {
   return n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
 }
 
-const isPercentIndicator = (name: string | undefined) => !!name && /率|占比/.test(name)
+const isPercentIndicator = (name: string | undefined) => !!name && /率|占比|比例|比率/.test(name)
 const formatMetric = (row: any, key: 'value' | 'benchmark' | 'challenge') => {
   const v = row?.[key]
   if (v === null || v === undefined || Number.isNaN(Number(v))) return ''
   const n = Number(v)
   if (isPercentIndicator(row?.indicator_name)) {
-    const pct = Math.abs(n) <= 1 ? n * 100 : n
-    return `${pct.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}%`
+    const pct = n * 100
+    return `${pct.toFixed(2)}%`
   }
   if (Number.isInteger(n)) return String(n)
   return n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')

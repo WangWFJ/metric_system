@@ -88,7 +88,7 @@ const indicatorName = ref('')
 const displayedDate = ref('')
 const raw = ref<Array<IndicatorLatestItem & { value: number | null; score?: number | null }>>([])
 
-const isPercentIndicator = computed(() => /率|占比/.test(indicatorName.value || ''))
+const isPercentIndicator = computed(() => /率|占比|比例|比率/.test(indicatorName.value || ''))
 const valueSuffix = computed(() => (isPercentIndicator.value ? '%' : ''))
 
 const viewCenter = ref(false)
@@ -112,8 +112,8 @@ const formatNum = (v: any) => {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return ''
   const n = Number(v)
   if (isPercentIndicator.value) {
-    const pct = Math.abs(n) <= 1 ? n * 100 : n
-    return `${pct.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}%`
+    const pct = n * 100
+    return `${pct.toFixed(2)}%`
   }
   if (Number.isInteger(n)) return String(n)
   return n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
@@ -153,7 +153,7 @@ const applySort = () => {
     const v = (it as any).value as number | null
     const name = (it as any)[entityNameKey.value] as string
     if (v === null || v === undefined) return { name, value: null }
-    if (isPercentIndicator.value && Math.abs(v) <= 1) return { name, value: Number((v * 100).toFixed(6)) }
+    if (isPercentIndicator.value) return { name, value: Number((v * 100).toFixed(6)) }
     return { name, value: v }
   })
 }
