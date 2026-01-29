@@ -27,6 +27,10 @@ const render = () => {
   if (!chart) return
   const names = props.items.map(i => i.name)
   const values = props.items.map(i => i.value)
+  const len = names.length
+  const barGap = len <= 10 ? '30%' : len <= 18 ? '24%' : len <= 28 ? '18%' : '12%'
+  const barWidth = len <= 10 ? 22 : len <= 18 ? 18 : 14
+  const axisLabelWidth = len <= 18 ? 140 : 120
   const fmt = (v: any) => {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return ''
     return `${v}${props.valueSuffix || ''}`
@@ -45,7 +49,7 @@ const render = () => {
         return `${name}<br/>${fmt(val)}`
       },
     },
-    grid: { left: 12, right: 12, top: props.title ? 44 : 16, bottom: 12, containLabel: true },
+    grid: { left: 12, right: 44, top: props.title ? 44 : 16, bottom: 12, containLabel: true },
     xAxis: {
       type: 'value',
       axisLabel: { color: '#9CA3AF', formatter: (v: any) => fmt(v) },
@@ -55,7 +59,7 @@ const render = () => {
       type: 'category',
       data: names,
       inverse: true,
-      axisLabel: { color: '#E5E7EB', width: 120, overflow: 'truncate' },
+      axisLabel: { color: '#E5E7EB', width: axisLabelWidth, overflow: 'truncate' },
       axisTick: { show: false },
       axisLine: { show: false },
     },
@@ -63,7 +67,8 @@ const render = () => {
       {
         type: 'bar',
         data: values,
-        barWidth: 14,
+        barWidth,
+        barCategoryGap: barGap,
         itemStyle: {
           borderRadius: [4, 4, 4, 4],
           color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [

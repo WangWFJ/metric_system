@@ -38,7 +38,7 @@
     </div>
 
     <div class="content">
-      <div ref="leftPanelRef" class="panel left">
+      <div class="panel left">
         <div class="chart-scroll">
           <DistrictRankingChart :title="chartTitle" :items="chartItems" :height="chartHeight" :value-suffix="valueSuffix" />
         </div>
@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import DistrictRankingChart from '@/components/DistrictRankingChart.vue'
 import { getEvaluationTypes, getIndicatorSuggestions, getIndicatorsByType, getIndicatorLatestById, getCenterLatestById, type EvaluationType, type IndicatorSimple, type IndicatorLatestItem } from '@/api/indicator'
@@ -80,9 +80,6 @@ const loading = ref(false)
 const form = ref<{ type_id?: number; indicator_id?: number; stat_date?: string }>({ type_id: undefined, indicator_id: undefined, stat_date: undefined })
 const nowText = ref('')
 let timer: number | null = null
-const leftPanelRef = ref<HTMLElement | null>(null)
-const leftPanelHeight = ref(520)
-let leftPanelRo: ResizeObserver | null = null
 
 const indicatorName = ref('')
 const displayedDate = ref('')
@@ -100,12 +97,12 @@ const tableTitle = computed(() => `${indicatorName.value || '指标'} 全${viewC
 const sortedAll = ref<Array<any>>([])
 const chartItems = ref<Array<{ name: string; value: number | null }>>([])
 
-const panelChartHeight = computed(() => Math.max(360, leftPanelHeight.value - 24))
 const chartHeight = computed(() => {
   const header = 56
-  const row = 28
-  const h = header + chartItems.value.length * row
-  return Math.max(panelChartHeight.value, h)
+  const len = chartItems.value.length
+  const row = 34
+  const h = header + len * row
+  return Math.max(360, h)
 })
 
 const formatNum = (v: any) => {
@@ -251,22 +248,11 @@ onMounted(() => {
   fetchTypes()
   tickNow()
   timer = window.setInterval(tickNow, 1000)
-  nextTick(() => {
-    if (!leftPanelRef.value) return
-    leftPanelHeight.value = leftPanelRef.value.clientHeight
-    leftPanelRo = new ResizeObserver(() => {
-      if (!leftPanelRef.value) return
-      leftPanelHeight.value = leftPanelRef.value.clientHeight
-    })
-    leftPanelRo.observe(leftPanelRef.value)
-  })
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
   timer = null
-  leftPanelRo?.disconnect()
-  leftPanelRo = null
 })
 </script>
 
