@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-import pandas as pd
 import io
 from datetime import date
 
@@ -18,6 +17,16 @@ from models.database import get_session
 from core.security import require_permission
 from models.metrics import IndicatorDataV2 as IndicatorData, Indicator, District, EvaluationType, Major, Center, IndicatorCenterData
 from sqlalchemy import select
+from utils.threadpool import run_pandas
+from utils.excel_utils import (
+    build_template_xlsx,
+    parse_indicator_upload_records,
+    parse_center_upload_records,
+    parse_indicator_manage_upload_records,
+    build_export_xlsx,
+    build_center_pivot_xlsx,
+    build_district_pivot_xlsx,
+)
 from services.indicator_service import (
     query_metrics,
     latest_metrics,
@@ -338,9 +347,6 @@ async def metrics_snapshot(
 
 @router.get("/upload/template", dependencies=[Depends(require_permission("indicator_data:add"))])
 async def download_upload_template(session: AsyncSession = Depends(get_session)):
-    import pandas as pd
-    import io
-    # 使用中文表头
     columns = [
         "指标名称",
         "区县",
@@ -374,11 +380,8 @@ async def download_upload_template(session: AsyncSession = Depends(get_session))
         "零容忍值": 0,
         "得分": 95.5,
     }
-    df = pd.DataFrame([desc_row, sample_row], columns=columns)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="模板")
-    buf.seek(0)
+    xlsx = await run_pandas(build_template_xlsx, columns, desc_row, sample_row, "模板")
+    buf = io.BytesIO(xlsx)
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=indicator_import_template.xlsx"})
 @router.post("/upload", status_code=201, dependencies=[Depends(require_permission("indicator_data:add"))])
 async def upload_indicator_data(
@@ -394,27 +397,7 @@ async def upload_indicator_data(
 
     try:
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents))
-        # 支持中文表头，进行列名映射
-        rename_map = {
-            '指标名称': 'indicator_name',
-            '区县': 'district_name',
-            '统计日期': 'stat_date',
-            '完成值': 'value',
-            '基准值': 'benchmark',
-            '挑战值': 'challenge',
-            '豁免值': 'exemption',
-            '零容忍值': 'zero_tolerance',
-            '得分': 'score',
-            '类型ID': 'type_id',
-            '类型名称': 'type_name',
-        }
-        df.rename(columns={c: rename_map.get(str(c).strip(), c) for c in df.columns}, inplace=True)
-        # Check required columns (英文键）
-        required_cols = ['indicator_name', 'district_name', 'stat_date', 'value']
-        for col in required_cols:
-            if col not in df.columns:
-                raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
+        records, row_count = await run_pandas(parse_indicator_upload_records, contents)
 
         # Process each row
         # To optimize, we should cache indicators and districts
@@ -430,9 +413,9 @@ async def upload_indicator_data(
         new_data = []
         errors = []
         
-        for index, row in df.iterrows():
-            ind_name = row['indicator_name']
-            dist_name = row['district_name']
+        for index, row in enumerate(records):
+            ind_name = row.get("indicator_name")
+            dist_name = row.get("district_name")
             
             if ind_name not in ind_map:
                 errors.append(f"Row {index+1}: Indicator '{ind_name}' not found")
@@ -446,13 +429,13 @@ async def upload_indicator_data(
             
             # Determine type_id from excel or indicator default
             provided_type_id = None
-            if 'type_id' in df.columns and pd.notna(row.get('type_id')):
+            if "type_id" in row and row.get("type_id") is not None:
                 try:
                     provided_type_id = int(row.get('type_id'))
                 except Exception:
                     errors.append(f"Row {index+1}: Invalid type_id value")
                     continue
-            elif 'type_name' in df.columns and pd.notna(row.get('type_name')):
+            elif "type_name" in row and row.get("type_name") is not None:
                 tname = str(row.get('type_name')).strip()
                 if tname in type_name_map:
                     provided_type_id = type_name_map[tname]
@@ -468,20 +451,27 @@ async def upload_indicator_data(
             final_type_id = provided_type_id or ind.type_id
 
             # Check for existing data
+            stat_date = row.get("stat_date")
+            if not stat_date:
+                errors.append(f"Row {index+1}: Invalid stat_date value")
+                continue
             existing_stmt = select(IndicatorData).where(
                 IndicatorData.indicator_id == ind.indicator_id,
                 IndicatorData.district_id == dist.district_id,
-                IndicatorData.stat_date == pd.to_datetime(row['stat_date']).date()
+                IndicatorData.stat_date == stat_date
             )
             existing = (await session.execute(existing_stmt)).scalar_one_or_none()
 
             if existing:
-                existing.value = row['value'] if pd.notna(row['value']) else None
-                existing.benchmark = row['benchmark'] if 'benchmark' in df.columns and pd.notna(row['benchmark']) else None
-                existing.challenge = row['challenge'] if 'challenge' in df.columns and pd.notna(row['challenge']) else None
-                existing.exemption = row['exemption'] if 'exemption' in df.columns and pd.notna(row['exemption']) else existing.exemption
-                existing.zero_tolerance = row['zero_tolerance'] if 'zero_tolerance' in df.columns and pd.notna(row['zero_tolerance']) else existing.zero_tolerance
-                existing.score = row['score'] if 'score' in df.columns and pd.notna(row['score']) else existing.score
+                existing.value = row.get("value")
+                existing.benchmark = row.get("benchmark")
+                existing.challenge = row.get("challenge")
+                if row.get("exemption") is not None:
+                    existing.exemption = row.get("exemption")
+                if row.get("zero_tolerance") is not None:
+                    existing.zero_tolerance = row.get("zero_tolerance")
+                if row.get("score") is not None:
+                    existing.score = row.get("score")
                 if existing.type_id is None:
                     existing.type_id = final_type_id
                 if existing.major_id is None:
@@ -498,13 +488,13 @@ async def upload_indicator_data(
                     circle_id=dist.circle_id or 0, # Default to 0 if None
                     district_id=dist.district_id,
                     district_name=dist.district_name,
-                    stat_date=pd.to_datetime(row['stat_date']).date(),
-                    value=row['value'] if pd.notna(row['value']) else None,
-                    benchmark=row['benchmark'] if 'benchmark' in df.columns and pd.notna(row['benchmark']) else None,
-                    challenge=row['challenge'] if 'challenge' in df.columns and pd.notna(row['challenge']) else None,
-                    exemption=row['exemption'] if 'exemption' in df.columns and pd.notna(row['exemption']) else None,
-                    zero_tolerance=row['zero_tolerance'] if 'zero_tolerance' in df.columns and pd.notna(row['zero_tolerance']) else None,
-                    score=row['score'] if 'score' in df.columns and pd.notna(row['score']) else None,
+                    stat_date=stat_date,
+                    value=row.get("value"),
+                    benchmark=row.get("benchmark"),
+                    challenge=row.get("challenge"),
+                    exemption=row.get("exemption"),
+                    zero_tolerance=row.get("zero_tolerance"),
+                    score=row.get("score"),
                     # ... other fields
                 )
                 session.add(data_obj)
@@ -514,10 +504,12 @@ async def upload_indicator_data(
             raise HTTPException(status_code=400, detail={"message": "Data validation failed", "errors": errors[:10]}) # Return first 10 errors
             
         await session.commit()
-        return {"message": "Data uploaded successfully", "count": len(df)}
+        return {"message": "Data uploaded successfully", "count": row_count}
         
     except Exception as e:
         await session.rollback()
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=400, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/center/upload/template", dependencies=[Depends(require_permission("indicator_data:add"))])
@@ -549,11 +541,8 @@ async def download_center_upload_template(session: AsyncSession = Depends(get_se
         "挑战值": 150,
         "得分": 95.5,
     }
-    df = pd.DataFrame([desc_row, sample_row], columns=columns)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="模板")
-    buf.seek(0)
+    xlsx = await run_pandas(build_template_xlsx, columns, desc_row, sample_row, "模板")
+    buf = io.BytesIO(xlsx)
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -570,23 +559,7 @@ async def upload_center_indicator_data(
 
     try:
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents))
-        rename_map = {
-            "指标名称": "indicator_name",
-            "支撑中心": "center_name",
-            "统计日期": "stat_date",
-            "完成值": "value",
-            "基准值": "benchmark",
-            "挑战值": "challenge",
-            "得分": "score",
-            "类型ID": "type_id",
-            "类型名称": "type_name",
-        }
-        df.rename(columns={c: rename_map.get(str(c).strip(), c) for c in df.columns}, inplace=True)
-        required_cols = ["indicator_name", "center_name", "stat_date", "value"]
-        for col in required_cols:
-            if col not in df.columns:
-                raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
+        records, row_count = await run_pandas(parse_center_upload_records, contents)
 
         indicators = (await session.execute(select(Indicator))).scalars().all()
         ind_map = {i.indicator_name: i for i in indicators}
@@ -596,9 +569,9 @@ async def upload_center_indicator_data(
         type_name_map = {t.type_name: t.type_id for t in eval_types}
 
         errors = []
-        for index, row in df.iterrows():
-            ind_name = row["indicator_name"]
-            center_name = row["center_name"]
+        for index, row in enumerate(records):
+            ind_name = row.get("indicator_name")
+            center_name = row.get("center_name")
             if ind_name not in ind_map:
                 errors.append(f"Row {index+1}: Indicator '{ind_name}' not found")
                 continue
@@ -609,13 +582,13 @@ async def upload_center_indicator_data(
 
             ind = ind_map[ind_name]
             provided_type_id = None
-            if "type_id" in df.columns and pd.notna(row.get("type_id")):
+            if "type_id" in row and row.get("type_id") is not None:
                 try:
                     provided_type_id = int(row.get("type_id"))
                 except Exception:
                     errors.append(f"Row {index+1}: Invalid type_id value")
                     continue
-            elif "type_name" in df.columns and pd.notna(row.get("type_name")):
+            elif "type_name" in row and row.get("type_name") is not None:
                 tname = str(row.get("type_name")).strip()
                 if tname in type_name_map:
                     provided_type_id = type_name_map[tname]
@@ -628,7 +601,10 @@ async def upload_center_indicator_data(
                 continue
             final_type_id = provided_type_id or ind.type_id
 
-            stat_date = pd.to_datetime(row["stat_date"]).date()
+            stat_date = row.get("stat_date")
+            if not stat_date:
+                errors.append(f"Row {index+1}: Invalid stat_date value")
+                continue
             existing_stmt = select(IndicatorCenterData).where(
                 IndicatorCenterData.indicator_id == ind.indicator_id,
                 IndicatorCenterData.center_id == center.center_id,
@@ -637,10 +613,11 @@ async def upload_center_indicator_data(
             existing = (await session.execute(existing_stmt)).scalar_one_or_none()
 
             if existing:
-                existing.value = row["value"] if pd.notna(row.get("value")) else None
-                existing.benchmark = row["benchmark"] if "benchmark" in df.columns and pd.notna(row.get("benchmark")) else None
-                existing.challenge = row["challenge"] if "challenge" in df.columns and pd.notna(row.get("challenge")) else None
-                existing.score = row["score"] if "score" in df.columns and pd.notna(row.get("score")) else existing.score
+                existing.value = row.get("value")
+                existing.benchmark = row.get("benchmark")
+                existing.challenge = row.get("challenge")
+                if row.get("score") is not None:
+                    existing.score = row.get("score")
                 if existing.type_id is None:
                     existing.type_id = final_type_id
                 if existing.major_id is None:
@@ -655,10 +632,10 @@ async def upload_center_indicator_data(
                     center_id=center.center_id,
                     center_name=center.center_name,
                     stat_date=stat_date,
-                    value=row["value"] if pd.notna(row.get("value")) else None,
-                    benchmark=row["benchmark"] if "benchmark" in df.columns and pd.notna(row.get("benchmark")) else None,
-                    challenge=row["challenge"] if "challenge" in df.columns and pd.notna(row.get("challenge")) else None,
-                    score=row["score"] if "score" in df.columns and pd.notna(row.get("score")) else None,
+                    value=row.get("value"),
+                    benchmark=row.get("benchmark"),
+                    challenge=row.get("challenge"),
+                    score=row.get("score"),
                 )
                 session.add(data_obj)
 
@@ -667,9 +644,11 @@ async def upload_center_indicator_data(
             raise HTTPException(status_code=400, detail={"message": "Data validation failed", "errors": errors[:10]})
 
         await session.commit()
-        return {"message": "Data uploaded successfully", "count": len(df)}
+        return {"message": "Data uploaded successfully", "count": row_count}
     except Exception as e:
         await session.rollback()
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=400, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/center/data", response_model=IndicatorCenterDataOut, status_code=201, dependencies=[Depends(require_permission("indicator_data:add"))])
@@ -752,22 +731,23 @@ async def export_metrics(
         page += 1
     if not all_items:
         all_items = [{"indicator_name": "", "district_name": "", "stat_date": "", "value": None}]
-    df = pd.DataFrame(all_items)
-    df = df.rename(columns={
-        "indicator_name": "指标名称",
-        "district_name": "区县",
-        "stat_date": "统计日期",
-        "value": "完成值",
-        "score": "得分",
-        "benchmark": "基准值",
-        "challenge": "挑战值",
-        "exemption": "豁免值",
-        "zero_tolerance": "零容忍值",
-    })
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="导出")
-    buf.seek(0)
+    xlsx = await run_pandas(
+        build_export_xlsx,
+        all_items,
+        {
+            "indicator_name": "指标名称",
+            "district_name": "区县",
+            "stat_date": "统计日期",
+            "value": "完成值",
+            "score": "得分",
+            "benchmark": "基准值",
+            "challenge": "挑战值",
+            "exemption": "豁免值",
+            "zero_tolerance": "零容忍值",
+        },
+        "导出",
+    )
+    buf = io.BytesIO(xlsx)
     fname = "metrics_export.xlsx"
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename={fname}"})
 
@@ -820,9 +800,10 @@ async def export_center_metrics(
         page += 1
     if not all_items:
         all_items = [{"indicator_name": "", "district_name": "", "center_name": "", "stat_date": "", "value": None}]
-    df = pd.DataFrame(all_items)
-    df = df.rename(
-        columns={
+    xlsx = await run_pandas(
+        build_export_xlsx,
+        all_items,
+        {
             "indicator_name": "指标名称",
             "district_name": "区县",
             "center_name": "支撑中心",
@@ -831,12 +812,10 @@ async def export_center_metrics(
             "benchmark": "基准值",
             "challenge": "挑战值",
             "score": "得分",
-        }
+        },
+        "导出",
     )
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="导出")
-    buf.seek(0)
+    buf = io.BytesIO(xlsx)
     fname = "center_metrics_export.xlsx"
     return StreamingResponse(
         buf,
@@ -880,90 +859,29 @@ async def export_center_metrics_v2(
             break
         page += 1
     if not all_rows:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            pd.DataFrame({"提示": ["无数据"]}).to_excel(writer, index=False, sheet_name="空")
-        buf.seek(0)
+        xlsx = await run_pandas(build_center_pivot_xlsx, [])
+        buf = io.BytesIO(xlsx)
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=center_metrics_export.xlsx"},
         )
-
-    pos_map: dict[int, int] = {}
-    name_map: dict[int, str] = {}
-    ordered_ind_ids: list[int] = []
-    seen = set()
-    for r in all_rows:
-        iid = getattr(r, "indicator_id")
-        if iid not in seen:
-            ordered_ind_ids.append(iid)
-            seen.add(iid)
-        name_map[iid] = getattr(r, "indicator_name", f"指标{iid}")
-        pos_map[iid] = getattr(r, "is_positive", 1)
-
-    from collections import defaultdict
-    group_by_date = defaultdict(list)
-    for r in all_rows:
-        group_by_date[str(getattr(r, "stat_date"))].append(r)
-
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for stat_date, rows in sorted(group_by_date.items()):
-            agg = defaultdict(dict)  # center_id -> indicator_id -> {value,score}
-            extra_cols = {}  # center_id -> (district_name, center_name)
-            for r in rows:
-                cid = getattr(r, "center_id")
-                iid = getattr(r, "indicator_id")
-                val = getattr(r, "value")
-                sc = getattr(r, "score", None)
-                agg[cid][iid] = {
-                    "value": float(val) if val is not None else None,
-                    "score": float(sc) if sc is not None else None,
-                }
-                extra_cols[cid] = (getattr(r, "district_name", ""), getattr(r, "center_name", ""))
-
-            data = []
-            for cid, vals in agg.items():
-                dname, cname = extra_cols.get(cid, ("", ""))
-                row = {"中心ID": cid, "区县": dname, "支撑中心": cname}
-                for iid in ordered_ind_ids:
-                    col_name = name_map.get(iid, f"指标{iid}")
-                    v = vals.get(iid) or {}
-                    row[col_name] = v.get("value")
-                    row[f"{col_name}-得分"] = v.get("score")
-                data.append(row)
-
-            df = pd.DataFrame(data)
-            df = df.sort_values(by=["中心ID"]).reset_index(drop=True)
-            if "中心ID" in df.columns:
-                df = df.drop(columns=["中心ID"])
-
-            if not df.empty:
-                total_row = {"区县": "", "支撑中心": "成都总计"}
-                best_row = {"区县": "", "支撑中心": "全市最优值"}
-                for iid in ordered_ind_ids:
-                    col_v = name_map.get(iid, f"指标{iid}")
-                    col_s = f"{col_v}-得分"
-                    series_v = pd.to_numeric(df[col_v], errors="coerce")
-                    series_s = pd.to_numeric(df[col_s], errors="coerce")
-                    total_row[col_v] = float(series_v.mean(skipna=True)) if series_v.size else None
-                    total_row[col_s] = float(series_s.mean(skipna=True)) if series_s.size else None
-                    if pos_map.get(iid, 1) == 1:
-                        best_row[col_v] = float(series_v.max(skipna=True)) if series_v.size else None
-                    else:
-                        best_row[col_v] = float(series_v.min(skipna=True)) if series_v.size else None
-                    best_row[col_s] = float(series_s.max(skipna=True)) if series_s.size else None
-                df = pd.concat([df, pd.DataFrame([total_row, best_row])], ignore_index=True)
-
-            df.to_excel(writer, index=False, sheet_name=str(stat_date))
-            ws = writer.sheets[str(stat_date)]
-            from openpyxl.styles import Font
-            bold = Font(bold=True)
-            for cell in ws[1]:
-                cell.font = bold
-
-    buf.seek(0)
+    pivot_rows = [
+        {
+            "indicator_id": getattr(r, "indicator_id", None),
+            "indicator_name": getattr(r, "indicator_name", None),
+            "is_positive": getattr(r, "is_positive", None),
+            "center_id": getattr(r, "center_id", None),
+            "center_name": getattr(r, "center_name", None),
+            "district_name": getattr(r, "district_name", None),
+            "stat_date": getattr(r, "stat_date", None),
+            "value": getattr(r, "value", None),
+            "score": getattr(r, "score", None),
+        }
+        for r in all_rows
+    ]
+    xlsx = await run_pandas(build_center_pivot_xlsx, pivot_rows)
+    buf = io.BytesIO(xlsx)
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -985,9 +903,6 @@ async def export_metrics_v2(
     desc: bool = Query(True),
     session: AsyncSession = Depends(get_session),
 ):
-    import pandas as pd
-    import io
-    # 1) 拉取所有满足条件的数据
     page = 1
     size = 2000
     all_rows: list[IndicatorData] = []
@@ -1013,95 +928,35 @@ async def export_metrics_v2(
             break
         page += 1
     if not all_rows:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            pd.DataFrame({"提示": ["无数据"]}).to_excel(writer, index=False, sheet_name="空")
-        buf.seek(0)
+        xlsx = await run_pandas(build_district_pivot_xlsx, [])
+        buf = io.BytesIO(xlsx)
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=metrics_export.xlsx"})
-    # 2) 辅助映射：区县圈层、指标正向性
     districts = (await session.execute(select(District))).scalars().all()
     dist_map = {d.district_id: (d.circle_id or 0, d.district_name) for d in districts}
-    # 指标正向性
     ind_ids = list({getattr(r, "indicator_id") for r in all_rows})
     inds = (await session.execute(select(Indicator).where(Indicator.indicator_id.in_(ind_ids)))).scalars().all()
     pos_map = {i.indicator_id: i.is_positive for i in inds}
     name_map = {i.indicator_id: i.indicator_name for i in inds}
-    # 列顺序：按出现顺序
-    ordered_ind_ids: list[int] = []
-    seen = set()
+    pivot_rows = []
     for r in all_rows:
         iid = getattr(r, "indicator_id")
-        if iid not in seen:
-            ordered_ind_ids.append(iid)
-            seen.add(iid)
-    # 3) 分统计时间构建Sheet
-    from collections import defaultdict
-    group_by_date: dict[str, list[IndicatorData]] = defaultdict(list)
-    for r in all_rows:
-        dt = str(getattr(r, "stat_date"))
-        group_by_date[dt].append(r)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for stat_date, rows in sorted(group_by_date.items()):
-            # 行：区县；列：各指标
-            # 先聚合为 {district_id: {indicator_id: value}}
-            agg: dict[int, dict[int, dict[str, float | None]]] = defaultdict(dict)
-            extra_cols: dict[int, tuple[int, str]] = {}  # district_id -> (circle_id, district_name)
-            for r in rows:
-                did = getattr(r, "district_id")
-                iid = getattr(r, "indicator_id")
-                val = getattr(r, "value")
-                sc = getattr(r, "score", None)
-                agg[did][iid] = {
-                    "value": float(val) if val is not None else None,
-                    "score": float(sc) if sc is not None else None,
-                }
-                extra_cols[did] = (dist_map.get(did, (0, getattr(r, "district_name")))[0], dist_map.get(did, (0, getattr(r, "district_name")))[1])
-            # 构建DataFrame
-            data = []
-            for did, vals in agg.items():
-                circle_id, dname = extra_cols.get(did, (0, ""))
-                row = {"区县ID": did, "圈层": circle_id, "区县": dname}
-                for iid in ordered_ind_ids:
-                    col_name = name_map.get(iid, f"指标{iid}")
-                    v = vals.get(iid) or {}
-                    row[col_name] = v.get("value")
-                    row[f"{col_name}-得分"] = v.get("score")
-                data.append(row)
-            # 按圈层、区县排序
-            df = pd.DataFrame(data)
-            # 改为按数据库区县ID顺序排列
-            df = df.sort_values(by=["区县ID"]).reset_index(drop=True)
-            # 导出时不显示内部排序字段
-            if "区县ID" in df.columns:
-                df = df.drop(columns=["区县ID"]) 
-            # 汇总行：总计（均值）与最优值
-            if not df.empty:
-                total_row = {"圈层": "", "区县": "成都总计"}
-                best_row = {"圈层": "", "区县": "全市最优值"}
-                for iid in ordered_ind_ids:
-                    col_v = name_map.get(iid, f"指标{iid}")
-                    col_s = f"{col_v}-得分"
-                    series_v = pd.to_numeric(df[col_v], errors="coerce")
-                    series_s = pd.to_numeric(df[col_s], errors="coerce")
-                    total_row[col_v] = float(series_v.mean(skipna=True)) if series_v.size else None
-                    total_row[col_s] = float(series_s.mean(skipna=True)) if series_s.size else None
-                    if pos_map.get(iid, 1) == 1:
-                        best_row[col_v] = float(series_v.max(skipna=True)) if series_v.size else None
-                    else:
-                        best_row[col_v] = float(series_v.min(skipna=True)) if series_v.size else None
-                    # 得分最优默认取最大
-                    best_row[col_s] = float(series_s.max(skipna=True)) if series_s.size else None
-                df = pd.concat([df, pd.DataFrame([total_row, best_row])], ignore_index=True)
-            # 写Sheet
-            df.to_excel(writer, index=False, sheet_name=str(stat_date))
-            # 简样式：加粗表头
-            ws = writer.sheets[str(stat_date)]
-            from openpyxl.styles import Font
-            bold = Font(bold=True)
-            for cell in ws[1]:
-                cell.font = bold
-    buf.seek(0)
+        did = getattr(r, "district_id")
+        circle_id, dname = dist_map.get(did, (0, getattr(r, "district_name")))
+        pivot_rows.append(
+            {
+                "district_id": did,
+                "district_name": dname,
+                "circle_id": circle_id,
+                "indicator_id": iid,
+                "indicator_name": name_map.get(iid, getattr(r, "indicator_name")),
+                "is_positive": pos_map.get(iid, 1),
+                "stat_date": getattr(r, "stat_date"),
+                "value": getattr(r, "value"),
+                "score": getattr(r, "score", None),
+            }
+        )
+    xlsx = await run_pandas(build_district_pivot_xlsx, pivot_rows)
+    buf = io.BytesIO(xlsx)
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=metrics_export.xlsx"})
 
 @router.get(
@@ -1179,9 +1034,6 @@ async def indicators_delete(indicator_id: int, session: AsyncSession = Depends(g
 # -------- Indicator bulk upload --------
 @router.get("/indicators/upload/template", dependencies=[Depends(require_permission("indicator:add"))])
 async def indicators_upload_template(session: AsyncSession = Depends(get_session)):
-    import pandas as pd
-    import io
-    # 使用中文表头
     columns = [
         "指标名称",
         "单位",
@@ -1212,11 +1064,8 @@ async def indicators_upload_template(session: AsyncSession = Depends(get_session
         "版本": 1,
         "说明": "示例说明",
     }
-    df = pd.DataFrame([desc_row, sample_row], columns=columns)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="模板")
-    buf.seek(0)
+    xlsx = await run_pandas(build_template_xlsx, columns, desc_row, sample_row, "模板")
+    buf = io.BytesIO(xlsx)
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=indicator_manage_template.xlsx"})
 
 @router.post("/indicators/upload", status_code=201, dependencies=[Depends(require_permission("indicator:add"))])
@@ -1224,31 +1073,13 @@ async def indicators_upload(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session)
 ):
-    import pandas as pd
-    import io
-    from sqlalchemy import select
     if not file.filename.endswith((".xls", ".xlsx")):
         raise HTTPException(status_code=400, detail="Only Excel files are allowed")
     contents = await file.read()
-    df = pd.read_excel(io.BytesIO(contents))
-    # 支持中文表头，进行列名映射
-    rename_map = {
-        "指标名称": "indicator_name",
-        "单位": "unit",
-        "专业中文名": "major_name",
-        "类型中文名": "type_name",
-        "是否正向": "is_positive",
-        "状态": "status",
-        "版本": "version",
-        "说明": "description",
-        "专业ID": "major_id",
-        "类型ID": "type_id",
-    }
-    df.rename(columns={c: rename_map.get(str(c).strip(), c) for c in df.columns}, inplace=True)
-    required = ["indicator_name"]
-    for col in required:
-        if col not in df.columns:
-            raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
+    try:
+        records, _row_count = await run_pandas(parse_indicator_manage_upload_records, contents)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     majors = (await session.execute(select(Major))).scalars().all()
     types = (await session.execute(select(EvaluationType))).scalars().all()
     major_name_map = {m.major_name: m.major_id for m in majors}
@@ -1259,7 +1090,7 @@ async def indicators_upload(
     errors = []
     created = 0
     updated = 0
-    for idx, row in df.iterrows():
+    for idx, row in enumerate(records):
         name = str(row.get("indicator_name") or "").strip()
         if not name:
             errors.append(f"Row {idx+1}: indicator_name is required")
@@ -1267,27 +1098,27 @@ async def indicators_upload(
         unit = str(row.get("unit") or "").strip() or None
         is_positive = row.get("is_positive")
         status = row.get("status")
-        version = row.get("version") if pd.notna(row.get("version")) else 1
+        version = row.get("version") if row.get("version") is not None else 1
         desc = str(row.get("description") or "").strip() or None
 
         # resolve major_id/type_id from name or explicit id
         maj_id = None
         typ_id = None
-        if "major_id" in df.columns and pd.notna(row.get("major_id")):
+        if row.get("major_id") is not None:
             try:
                 maj_id = int(row.get("major_id"))
             except Exception:
                 errors.append(f"Row {idx+1}: invalid major_id")
                 continue
-        elif "major_name" in df.columns and pd.notna(row.get("major_name")):
+        elif row.get("major_name") is not None:
             maj_id = major_name_map.get(str(row.get("major_name")).strip())
-        if "type_id" in df.columns and pd.notna(row.get("type_id")):
+        if row.get("type_id") is not None:
             try:
                 typ_id = int(row.get("type_id"))
             except Exception:
                 errors.append(f"Row {idx+1}: invalid type_id")
                 continue
-        elif "type_name" in df.columns and pd.notna(row.get("type_name")):
+        elif row.get("type_name") is not None:
             typ_id = type_name_map.get(str(row.get("type_name")).strip())
 
         if maj_id is None:

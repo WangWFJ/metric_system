@@ -10,6 +10,16 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "mysql+aiomysql://wangfanjun:01020304@10.101.192.2:3306/db_indicator?charset=utf8mb4"
 
+    # 每个 worker 连接池大小
+    DB_POOL_SIZE: int = 4
+    DB_MAX_OVERFLOW: int = 4
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
+    DB_POOL_PRE_PING: bool = True
+
+    PANDAS_THREAD_WORKERS: int = 4
+    PANDAS_JOB_CONCURRENCY: int = 4
+
     JWT_SECRET_KEY: str = secrets.token_urlsafe(32)
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
