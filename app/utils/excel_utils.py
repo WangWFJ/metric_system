@@ -4,6 +4,14 @@ from collections import defaultdict
 import pandas as pd
 
 
+def _na_to_none(v):
+    return None if pd.isna(v) else v
+
+
+def _normalize_records(records: list[dict]) -> list[dict]:
+    return [{k: _na_to_none(v) for k, v in r.items()} for r in records]
+
+
 def build_template_xlsx(columns: list[str], desc_row: dict, sample_row: dict, sheet_name: str = "模板") -> bytes:
     df = pd.DataFrame([desc_row, sample_row], columns=columns)
     buf = io.BytesIO()
@@ -34,7 +42,7 @@ def parse_indicator_upload_records(contents: bytes) -> tuple[list[dict], int]:
             raise ValueError(f"Missing required column: {col}")
     df["stat_date"] = pd.to_datetime(df["stat_date"], errors="coerce").dt.date
     df = df.where(pd.notna(df), None)
-    records = df.to_dict(orient="records")
+    records = _normalize_records(df.to_dict(orient="records"))
     return records, len(df)
 
 
@@ -58,7 +66,7 @@ def parse_center_upload_records(contents: bytes) -> tuple[list[dict], int]:
             raise ValueError(f"Missing required column: {col}")
     df["stat_date"] = pd.to_datetime(df["stat_date"], errors="coerce").dt.date
     df = df.where(pd.notna(df), None)
-    records = df.to_dict(orient="records")
+    records = _normalize_records(df.to_dict(orient="records"))
     return records, len(df)
 
 
@@ -80,7 +88,7 @@ def parse_indicator_manage_upload_records(contents: bytes) -> tuple[list[dict], 
     if "indicator_name" not in df.columns:
         raise ValueError("Missing required column: indicator_name")
     df = df.where(pd.notna(df), None)
-    records = df.to_dict(orient="records")
+    records = _normalize_records(df.to_dict(orient="records"))
     return records, len(df)
 
 

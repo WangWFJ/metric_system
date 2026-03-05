@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Tuple
 from fastapi import HTTPException
 from datetime import date
+import math
+import numbers
 
 from models.metrics import IndicatorDataV2 as IndicatorData, Indicator, Major, KPIType, District, EvaluationType, Center, IndicatorCenterData
 from models.metrics_schemas import (
@@ -20,6 +22,16 @@ from models.metrics_schemas import (
     IndicatorCenterDataOut,
     CenterMetricsResponse,
 )
+
+def _nan_to_none(v):
+    if v is None:
+        return None
+    if isinstance(v, numbers.Real):
+        try:
+            return None if math.isnan(v) else v
+        except Exception:
+            return v
+    return v
 
 
 async def query_metrics(
@@ -380,13 +392,13 @@ async def update_indicator_data(session: AsyncSession, data) -> IndicatorDataOut
     existing = (await session.execute(stmt)).scalar_one_or_none()
     if not existing:
         raise HTTPException(status_code=404, detail="Indicator data not found")
-    existing.value = data.value
-    existing.benchmark = data.benchmark
-    existing.challenge = data.challenge
-    existing.exemption = data.exemption
-    existing.zero_tolerance = data.zero_tolerance
+    existing.value = _nan_to_none(data.value)
+    existing.benchmark = _nan_to_none(data.benchmark)
+    existing.challenge = _nan_to_none(data.challenge)
+    existing.exemption = _nan_to_none(data.exemption)
+    existing.zero_tolerance = _nan_to_none(data.zero_tolerance)
     if hasattr(data, "score"):
-        existing.score = data.score
+        existing.score = _nan_to_none(data.score)
     await session.commit()
     await session.refresh(existing)
     return IndicatorDataOut.model_validate(existing)
@@ -437,11 +449,15 @@ async def create_center_data(session: AsyncSession, data):
     existing = (await session.execute(existing_stmt)).scalar_one_or_none()
 
     final_type_id = data.type_id or ind.type_id
+    value = _nan_to_none(data.value)
+    benchmark = _nan_to_none(data.benchmark)
+    challenge = _nan_to_none(data.challenge)
+    score = _nan_to_none(data.score) if hasattr(data, "score") else None
     if existing:
-        existing.value = data.value
-        existing.benchmark = data.benchmark
-        existing.challenge = data.challenge
-        existing.score = data.score if hasattr(data, "score") else existing.score
+        existing.value = value
+        existing.benchmark = benchmark
+        existing.challenge = challenge
+        existing.score = score if hasattr(data, "score") else existing.score
         if existing.type_id is None:
             existing.type_id = final_type_id
         if existing.major_id is None:
@@ -457,10 +473,10 @@ async def create_center_data(session: AsyncSession, data):
             center_id=center.center_id,
             center_name=center.center_name,
             stat_date=data.stat_date,
-            value=data.value,
-            benchmark=data.benchmark,
-            challenge=data.challenge,
-            score=(data.score if hasattr(data, "score") else None),
+            value=value,
+            benchmark=benchmark,
+            challenge=challenge,
+            score=score,
         )
         session.add(data_obj)
     await session.commit()
@@ -476,11 +492,11 @@ async def update_center_data(session: AsyncSession, data) -> IndicatorCenterData
     existing = (await session.execute(stmt)).scalar_one_or_none()
     if not existing:
         raise HTTPException(status_code=404, detail="Indicator center data not found")
-    existing.value = data.value
-    existing.benchmark = data.benchmark
-    existing.challenge = data.challenge
+    existing.value = _nan_to_none(data.value)
+    existing.benchmark = _nan_to_none(data.benchmark)
+    existing.challenge = _nan_to_none(data.challenge)
     if hasattr(data, "score"):
-        existing.score = data.score
+        existing.score = _nan_to_none(data.score)
     await session.commit()
     await session.refresh(existing)
     return IndicatorCenterDataOut.model_validate(existing)
@@ -1125,14 +1141,21 @@ async def create_indicator_data(session: AsyncSession, data):
     if data.type_id is not None and ind.type_id is not None and data.type_id != ind.type_id:
         raise HTTPException(400, "Provided type_id does not match indicator's type")
 
+    value = _nan_to_none(data.value)
+    benchmark = _nan_to_none(data.benchmark)
+    challenge = _nan_to_none(data.challenge)
+    exemption = _nan_to_none(data.exemption)
+    zero_tolerance = _nan_to_none(data.zero_tolerance)
+    score = _nan_to_none(data.score) if hasattr(data, "score") else None
+
     if existing:
         # Update existing
-        existing.value = data.value
-        existing.benchmark = data.benchmark
-        existing.challenge = data.challenge
-        existing.exemption = data.exemption
-        existing.zero_tolerance = data.zero_tolerance
-        existing.score = data.score if hasattr(data, "score") else existing.score
+        existing.value = value
+        existing.benchmark = benchmark
+        existing.challenge = challenge
+        existing.exemption = exemption
+        existing.zero_tolerance = zero_tolerance
+        existing.score = score if hasattr(data, "score") else existing.score
         # keep classification consistent; optionally update type/major if missing
         if existing.type_id is None:
             existing.type_id = data.type_id or ind.type_id
@@ -1152,12 +1175,12 @@ async def create_indicator_data(session: AsyncSession, data):
             district_id=dist.district_id,
             district_name=dist.district_name,
             stat_date=data.stat_date,
-            value=data.value,
-            benchmark=data.benchmark,
-            challenge=data.challenge,
-            exemption=data.exemption,
-            zero_tolerance=data.zero_tolerance,
-            score=(data.score if hasattr(data, "score") else None)
+            value=value,
+            benchmark=benchmark,
+            challenge=challenge,
+            exemption=exemption,
+            zero_tolerance=zero_tolerance,
+            score=score
         )
         session.add(data_obj)
     

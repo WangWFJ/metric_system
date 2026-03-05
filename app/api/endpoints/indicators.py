@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import io
 from datetime import date
+import math
+import numbers
 
 from models.common import PageResponse
 from models.metrics_schemas import MajorMetricsResponse, TypeMetricsResponse, DistrictMetricsResponse, CenterMetricsResponse, DistrictOut, MajorOut, CenterOut, EvaluationTypeOut, IndicatorSimpleOut, IndicatorDataCreate, IndicatorCenterDataCreate, IndicatorCenterDataDelete, CenterLatestQueryOut
@@ -56,6 +58,16 @@ from services.indicator_service import (
 from services.indicator_service import update_indicator_data
 
 router = APIRouter(prefix="/api/v1/metrics", tags=["metrics"])
+
+def _nan_to_none(v):
+    if v is None:
+        return None
+    if isinstance(v, numbers.Real):
+        try:
+            return None if math.isnan(v) else v
+        except Exception:
+            return v
+    return v
 
 @router.get("/districts", response_model=list[DistrictOut])
 async def get_districts(session: AsyncSession = Depends(get_session)):
@@ -462,16 +474,23 @@ async def upload_indicator_data(
             )
             existing = (await session.execute(existing_stmt)).scalar_one_or_none()
 
+            value = _nan_to_none(row.get("value"))
+            benchmark = _nan_to_none(row.get("benchmark"))
+            challenge = _nan_to_none(row.get("challenge"))
+            exemption = _nan_to_none(row.get("exemption"))
+            zero_tolerance = _nan_to_none(row.get("zero_tolerance"))
+            score = _nan_to_none(row.get("score"))
+
             if existing:
-                existing.value = row.get("value")
-                existing.benchmark = row.get("benchmark")
-                existing.challenge = row.get("challenge")
-                if row.get("exemption") is not None:
-                    existing.exemption = row.get("exemption")
-                if row.get("zero_tolerance") is not None:
-                    existing.zero_tolerance = row.get("zero_tolerance")
-                if row.get("score") is not None:
-                    existing.score = row.get("score")
+                existing.value = value
+                existing.benchmark = benchmark
+                existing.challenge = challenge
+                if exemption is not None:
+                    existing.exemption = exemption
+                if zero_tolerance is not None:
+                    existing.zero_tolerance = zero_tolerance
+                if score is not None:
+                    existing.score = score
                 if existing.type_id is None:
                     existing.type_id = final_type_id
                 if existing.major_id is None:
@@ -489,12 +508,12 @@ async def upload_indicator_data(
                     district_id=dist.district_id,
                     district_name=dist.district_name,
                     stat_date=stat_date,
-                    value=row.get("value"),
-                    benchmark=row.get("benchmark"),
-                    challenge=row.get("challenge"),
-                    exemption=row.get("exemption"),
-                    zero_tolerance=row.get("zero_tolerance"),
-                    score=row.get("score"),
+                    value=value,
+                    benchmark=benchmark,
+                    challenge=challenge,
+                    exemption=exemption,
+                    zero_tolerance=zero_tolerance,
+                    score=score,
                     # ... other fields
                 )
                 session.add(data_obj)
@@ -612,12 +631,17 @@ async def upload_center_indicator_data(
             )
             existing = (await session.execute(existing_stmt)).scalar_one_or_none()
 
+            value = _nan_to_none(row.get("value"))
+            benchmark = _nan_to_none(row.get("benchmark"))
+            challenge = _nan_to_none(row.get("challenge"))
+            score = _nan_to_none(row.get("score"))
+
             if existing:
-                existing.value = row.get("value")
-                existing.benchmark = row.get("benchmark")
-                existing.challenge = row.get("challenge")
-                if row.get("score") is not None:
-                    existing.score = row.get("score")
+                existing.value = value
+                existing.benchmark = benchmark
+                existing.challenge = challenge
+                if score is not None:
+                    existing.score = score
                 if existing.type_id is None:
                     existing.type_id = final_type_id
                 if existing.major_id is None:
@@ -632,10 +656,10 @@ async def upload_center_indicator_data(
                     center_id=center.center_id,
                     center_name=center.center_name,
                     stat_date=stat_date,
-                    value=row.get("value"),
-                    benchmark=row.get("benchmark"),
-                    challenge=row.get("challenge"),
-                    score=row.get("score"),
+                    value=value,
+                    benchmark=benchmark,
+                    challenge=challenge,
+                    score=score,
                 )
                 session.add(data_obj)
 
