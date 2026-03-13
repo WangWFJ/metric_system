@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "data_proj_v1"
     VERSION: str = "0.1.0"
 
-    DATABASE_URL: str = "mysql+aiomysql://wangfanjun:01020304@10.101.192.2:3306/db_indicator?charset=utf8mb4"
+    DATABASE_URL: str = "mysql+aiomysql://wangfanjun:01020304@localhost:3306/db_indicator?charset=utf8mb4"
 
     # 每个 worker 连接池大小
     DB_POOL_SIZE: int = 4
